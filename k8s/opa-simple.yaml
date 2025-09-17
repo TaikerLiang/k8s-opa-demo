@@ -1,0 +1,76 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-policies
+  namespace: demo-trino
+data:
+  authz.rego: |
+    package trino.authz
+
+    default allow = false
+
+    allow {
+        input.context.identity.user != ""
+    }
+
+  rowfilter.rego: |
+    package trino.rowfilter
+
+    default expression = ""
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa
+  namespace: demo-trino
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa
+  template:
+    metadata:
+      labels:
+        app: opa
+    spec:
+      containers:
+      - name: opa
+        image: openpolicyagent/opa:0.58.0
+        args:
+        - "run"
+        - "--server"
+        - "--log-level=debug"
+        - "/policies"
+        ports:
+        - containerPort: 8181
+        volumeMounts:
+        - name: opa-policies
+          mountPath: /policies
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      volumes:
+      - name: opa-policies
+        configMap:
+          name: opa-policies
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa
+  namespace: demo-trino
+spec:
+  selector:
+    app: opa
+  ports:
+  - name: http
+    port: 8181
+    targetPort: 8181
+  type: ClusterIP

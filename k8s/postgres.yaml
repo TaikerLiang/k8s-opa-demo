@@ -1,0 +1,93 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: demo-trino
+data:
+  init.sql: |
+    CREATE TABLE orders (
+        order_id SERIAL PRIMARY KEY,
+        customer_id INTEGER NOT NULL,
+        product_name VARCHAR(100) NOT NULL,
+        quantity INTEGER NOT NULL,
+        price DECIMAL(10,2) NOT NULL,
+        order_date DATE NOT NULL,
+        region VARCHAR(50) NOT NULL,
+        sales_rep VARCHAR(50) NOT NULL
+    );
+
+    INSERT INTO orders (customer_id, product_name, quantity, price, order_date, region, sales_rep) VALUES
+    (1001, 'Laptop Pro', 2, 1299.99, '2024-01-15', 'north', 'alice'),
+    (1002, 'Wireless Mouse', 5, 29.99, '2024-01-16', 'south', 'bob'),
+    (1003, 'Monitor 27"', 1, 349.99, '2024-01-17', 'north', 'alice'),
+    (1004, 'Keyboard Mechanical', 3, 89.99, '2024-01-18', 'east', 'charlie'),
+    (1005, 'Tablet Air', 1, 599.99, '2024-01-19', 'west', 'diana'),
+    (1006, 'Headphones Pro', 2, 199.99, '2024-01-20', 'north', 'alice'),
+    (1007, 'Webcam HD', 4, 79.99, '2024-01-21', 'south', 'bob'),
+    (1008, 'Dock Station', 1, 249.99, '2024-01-22', 'east', 'charlie'),
+    (1009, 'Smart Watch', 2, 299.99, '2024-01-23', 'west', 'diana'),
+    (1010, 'Phone Case', 10, 19.99, '2024-01-24', 'north', 'alice');
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: demo-trino
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15
+        env:
+        - name: POSTGRES_DB
+          value: "demo"
+        - name: POSTGRES_USER
+          value: "trino"
+        - name: POSTGRES_PASSWORD
+          value: "trinopass"
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: init-script
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: postgres-storage
+        emptyDir: {}
+      - name: init-script
+        configMap:
+          name: postgres-init
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: demo-trino
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP

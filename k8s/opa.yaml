@@ -1,0 +1,160 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-policies
+  namespace: demo-trino
+data:
+  authz.rego: |
+    package trino.authz
+
+    # Default deny all
+    default allow = false
+
+    # Allow basic queries for authenticated users
+    allow {
+        allowed_operations[input.action.operation]
+        input.context.identity.user != ""
+    }
+
+    # Allow metadata operations
+    allow {
+        metadata_operations[input.action.operation]
+        input.context.identity.user != ""
+    }
+
+    allowed_operations[op] {
+        op := "SELECT"
+    }
+    allowed_operations[op] {
+        op := "SHOW"
+    }
+
+    metadata_operations[op] {
+        op := "SHOW_TABLES"
+    }
+    metadata_operations[op] {
+        op := "SHOW_COLUMNS"
+    }
+    metadata_operations[op] {
+        op := "DESCRIBE"
+    }
+
+  rowfilter.rego: |
+    package trino.rowfilter
+
+    # Default no filter
+    default expression = ""
+
+    # Row filter for orders table based on sales_rep
+    expression = sprintf("sales_rep = '%s'", [input.context.identity.user]) {
+        input.action.resource.table.tableName == "orders"
+        valid_users[input.context.identity.user]
+    }
+
+    # Admin users see all data
+    expression = "" {
+        input.action.resource.table.tableName == "orders"
+        input.context.identity.user == "admin"
+    }
+
+    valid_users[user] {
+        user := "alice"
+    }
+    valid_users[user] {
+        user := "bob"
+    }
+    valid_users[user] {
+        user := "charlie"
+    }
+    valid_users[user] {
+        user := "diana"
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa
+  namespace: demo-trino
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa
+  template:
+    metadata:
+      labels:
+        app: opa
+    spec:
+      containers:
+      - name: opa
+        image: openpolicyagent/opa:0.58.0-envoy
+        args:
+        - "run"
+        - "--server"
+        - "--config-file=/config/config.yaml"
+        - "/policies"
+        ports:
+        - containerPort: 8181
+        volumeMounts:
+        - name: opa-policies
+          mountPath: /policies
+        - name: opa-config
+          mountPath: /config
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      volumes:
+      - name: opa-policies
+        configMap:
+          name: opa-policies
+      - name: opa-config
+        configMap:
+          name: opa-config
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-config
+  namespace: demo-trino
+data:
+  config.yaml: |
+    services:
+      authz:
+        url: http://localhost:8181
+
+    bundles:
+      trino:
+        resource: /policies
+
+    decision_logs:
+      console: true
+
+    plugins:
+      envoy_ext_authz_grpc:
+        addr: :9191
+        enable_reflection: true
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa
+  namespace: demo-trino
+spec:
+  selector:
+    app: opa
+  ports:
+  - name: http
+    port: 8181
+    targetPort: 8181
+  - name: grpc
+    port: 9191
+    targetPort: 9191
+  type: ClusterIP
