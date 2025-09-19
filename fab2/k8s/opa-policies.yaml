@@ -1,0 +1,118 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-policies-fab2
+  namespace: demo-trino
+data:
+  authz.rego: |
+    package trino.authz
+
+    import data.trino.external_api
+
+    # Default deny all
+    default allow = false
+
+    # Allow basic queries with external API validation
+    allow if {
+        input.action.operation in ["SELECT", "SHOW"]
+        user := input.context.identity.user
+        external_api.user_authorized(user)
+    }
+
+    # Allow metadata operations with external API validation
+    allow if {
+        input.action.operation in ["SHOW_TABLES", "SHOW_COLUMNS", "DESCRIBE"]
+        user := input.context.identity.user
+        external_api.user_authorized(user)
+    }
+
+    # Additional rule: allow if local alice validation passes (fallback)
+    allow if {
+        input.action.operation in ["SELECT", "SHOW", "SHOW_TABLES", "SHOW_COLUMNS", "DESCRIBE"]
+        input.context.identity.user == "alice"
+        # This ensures alice can still access even if API is down
+    }
+
+  external_api.rego: |
+    package trino.external_api
+
+    import data.trino.config
+
+    # Validate user through external API
+    validate_user(user) := response if {
+        user != ""
+        config.basic_auth_token != ""
+        config.api_base_url != ""
+
+        request := {
+            "method": "GET",
+            "url": sprintf("%s/%s", [config.api_base_url, user]),
+            "headers": {
+                "Authorization": sprintf("Basic %s", [config.basic_auth_token]),
+                "Content-Type": "application/json"
+            },
+            "timeout": config.api_timeout
+        }
+
+        response := http.send(request)
+    }
+
+    # Check if user is valid based on API response
+    user_is_valid(user) if {
+        response := validate_user(user)
+        response.status_code == 200
+    }
+
+    # Get user attributes from API response
+    user_attributes(user) := attributes if {
+        response := validate_user(user)
+        response.status_code == 200
+        attributes := response.body
+    }
+
+    # Fallback for when API is unavailable - use local validation only
+    user_is_valid_fallback(user) if {
+        # If API call fails, fall back to local user validation
+        user == "alice"  # Only alice is allowed locally
+    }
+
+    # Main user validation function with fallback
+    user_authorized(user) if {
+        user_is_valid(user)
+    } else := user_is_valid_fallback(user) if {
+        # API validation failed, use fallback
+        true
+    }
+
+  config.rego: |
+    package trino.config
+
+    # Load configuration from environment variables and ConfigMap
+    # These will be available as data.config.* in other policies
+
+    # API configuration from ConfigMap
+    api_base_url := opa.runtime()["config"]["api_base_url"]
+    api_timeout := opa.runtime()["config"]["api_timeout"]
+    environment := opa.runtime()["config"]["environment"]
+
+    # Credentials from environment variables (populated from Secret)
+    basic_auth_token := opa.runtime()["config"]["basic_auth_token"]
+
+    # Default values if not configured
+    default api_base_url := "http://localhost:8080"
+    default api_timeout := "5s"
+    default environment := "development"
+    default basic_auth_token := ""
+
+  rowfilter.rego: |
+    package trino.rowfilter
+
+    # Default no filter
+    default expression = ""
+
+    # Row filter for orders table - only alice can see her data
+    expression = sprintf("sales_rep = '%s'", [input.context.identity.user]) if {
+        input.action.resource.table.tableName == "orders"
+        input.context.identity.user == "alice"
+    }

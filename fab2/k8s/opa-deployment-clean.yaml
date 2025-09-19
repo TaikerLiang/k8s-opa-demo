@@ -1,0 +1,86 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa
+  namespace: demo-trino
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa
+  template:
+    metadata:
+      labels:
+        app: opa
+    spec:
+      containers:
+      - name: opa
+        image: openpolicyagent/opa:0.58.0
+        args:
+        - "run"
+        - "--server"
+        - "--log-level=info"
+        - "--config-file=/config/config.yaml"
+        - "/policies"
+        ports:
+        - containerPort: 8181
+        - containerPort: 9191
+        env:
+        - name: API_BASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: opa-api-config
+              key: api_base_url
+        - name: API_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: opa-api-config
+              key: api_timeout
+        - name: ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: opa-api-config
+              key: environment
+        - name: BASIC_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: opa-api-credentials
+              key: basic_auth_token
+        volumeMounts:
+        - name: opa-policies
+          mountPath: /policies
+        - name: opa-config
+          mountPath: /config
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      volumes:
+      - name: opa-policies
+        configMap:
+          name: opa-policies-fab2
+      - name: opa-config
+        configMap:
+          name: opa-runtime-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa
+  namespace: demo-trino
+spec:
+  selector:
+    app: opa
+  ports:
+  - name: http
+    port: 8181
+    targetPort: 8181
+  - name: grpc
+    port: 9191
+    targetPort: 9191
+  type: ClusterIP

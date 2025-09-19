@@ -15,14 +15,19 @@ fi
 echo "📁 Creating demo-trino namespace..."
 kubectl create namespace demo-trino --dry-run=client -o yaml | kubectl apply -f -
 
-# Deploy API configuration and secrets
+# Deploy shared runtime configuration
+echo "🔧 Deploying shared OPA runtime configuration..."
+kubectl apply -f ../k8s/opa-runtime-config.yaml
+
+# Deploy fab1-specific configuration and secrets
 echo "🔧 Deploying API configuration for fab1..."
 kubectl apply -f k8s/opa-config.yaml
 kubectl apply -f k8s/opa-secrets.yaml
+kubectl apply -f k8s/opa-policies.yaml
 
 # Deploy OPA with API integration
 echo "🛡️ Deploying OPA with external API integration..."
-kubectl apply -f k8s/opa-deployment.yaml
+kubectl apply -f k8s/opa-deployment-clean.yaml
 
 # Wait for OPA deployment
 echo "⏳ Waiting for OPA to start..."
