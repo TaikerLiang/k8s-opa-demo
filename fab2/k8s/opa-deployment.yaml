@@ -1,0 +1,231 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-policies
+  namespace: demo-trino
+data:
+  authz.rego: |
+    package trino.authz
+
+    import data.trino.external_api
+
+    # Default deny all
+    default allow = false
+
+    # Allow basic queries with external API validation
+    allow if {
+        input.action.operation in ["SELECT", "SHOW"]
+        user := input.context.identity.user
+        external_api.user_authorized(user)
+    }
+
+    # Allow metadata operations with external API validation
+    allow if {
+        input.action.operation in ["SHOW_TABLES", "SHOW_COLUMNS", "DESCRIBE"]
+        user := input.context.identity.user
+        external_api.user_authorized(user)
+    }
+
+    # Additional rule: allow if local alice validation passes (fallback)
+    allow if {
+        input.action.operation in ["SELECT", "SHOW", "SHOW_TABLES", "SHOW_COLUMNS", "DESCRIBE"]
+        input.context.identity.user == "alice"
+        # This ensures alice can still access even if API is down
+    }
+
+  external_api.rego: |
+    package trino.external_api
+
+    import data.trino.config
+
+    # Validate user through external API
+    validate_user(user) := response if {
+        user != ""
+        config.basic_auth_token != ""
+        config.api_base_url != ""
+
+        request := {
+            "method": "GET",
+            "url": sprintf("%s/%s", [config.api_base_url, user]),
+            "headers": {
+                "Authorization": sprintf("Basic %s", [config.basic_auth_token]),
+                "Content-Type": "application/json"
+            },
+            "timeout": config.api_timeout
+        }
+
+        response := http.send(request)
+    }
+
+    # Check if user is valid based on API response
+    user_is_valid(user) if {
+        response := validate_user(user)
+        response.status_code == 200
+    }
+
+    # Get user attributes from API response
+    user_attributes(user) := attributes if {
+        response := validate_user(user)
+        response.status_code == 200
+        attributes := response.body
+    }
+
+    # Fallback for when API is unavailable - use local validation only
+    user_is_valid_fallback(user) if {
+        # If API call fails, fall back to local user validation
+        user == "alice"  # Only alice is allowed locally
+    }
+
+    # Main user validation function with fallback
+    user_authorized(user) if {
+        user_is_valid(user)
+    } else := user_is_valid_fallback(user) if {
+        # API validation failed, use fallback
+        true
+    }
+
+  config.rego: |
+    package trino.config
+
+    # Load configuration from environment variables and ConfigMap
+    # These will be available as data.config.* in other policies
+
+    # API configuration from ConfigMap
+    api_base_url := opa.runtime()["config"]["api_base_url"]
+    api_timeout := opa.runtime()["config"]["api_timeout"]
+    environment := opa.runtime()["config"]["environment"]
+
+    # Credentials from environment variables (populated from Secret)
+    basic_auth_token := opa.runtime()["config"]["basic_auth_token"]
+
+    # Default values if not configured
+    default api_base_url := "http://localhost:8080"
+    default api_timeout := "5s"
+    default environment := "development"
+    default basic_auth_token := ""
+
+  rowfilter.rego: |
+    package trino.rowfilter
+
+    # Default no filter
+    default expression = ""
+
+    # Row filter for orders table - only alice can see her data
+    expression = sprintf("sales_rep = '%s'", [input.context.identity.user]) if {
+        input.action.resource.table.tableName == "orders"
+        input.context.identity.user == "alice"
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa
+  namespace: demo-trino
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa
+  template:
+    metadata:
+      labels:
+        app: opa
+    spec:
+      containers:
+      - name: opa
+        image: openpolicyagent/opa:0.58.0
+        args:
+        - "run"
+        - "--server"
+        - "--log-level=info"
+        - "--config-file=/config/config.yaml"
+        - "/policies"
+        ports:
+        - containerPort: 8181
+        env:
+        - name: API_BASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: opa-api-config
+              key: api_base_url
+        - name: API_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: opa-api-config
+              key: api_timeout
+        - name: ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: opa-api-config
+              key: environment
+        - name: BASIC_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: opa-api-credentials
+              key: basic_auth_token
+        volumeMounts:
+        - name: opa-policies
+          mountPath: /policies
+        - name: opa-config
+          mountPath: /config
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      volumes:
+      - name: opa-policies
+        configMap:
+          name: opa-policies
+      - name: opa-config
+        configMap:
+          name: opa-runtime-config
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-runtime-config
+  namespace: demo-trino
+data:
+  config.yaml: |
+    services:
+      authz:
+        url: http://localhost:8181
+
+    bundles:
+      authz:
+        persist: true
+        polling:
+          min_delay_seconds: 10
+          max_delay_seconds: 20
+
+    decision_logs:
+      console: true
+
+    plugins:
+      envoy_ext_authz_grpc:
+        addr: :9191
+        enable_reflection: true
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa
+  namespace: demo-trino
+spec:
+  selector:
+    app: opa
+  ports:
+  - name: http
+    port: 8181
+    targetPort: 8181
+  - name: grpc
+    port: 9191
+    targetPort: 9191
+  type: ClusterIP
