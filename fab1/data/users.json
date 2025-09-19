@@ -1,0 +1,7 @@
+{
+  "users": {
+    "alice": { "department": "eng" },
+    "bob":   { "department": "ops" },
+    "trino": { "department": "system", "type": "service_account" }
+  }
+}
