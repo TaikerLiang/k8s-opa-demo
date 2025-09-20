@@ -1,0 +1,18 @@
+repos:
+  - repo: local
+    hooks:
+      - id: opa-fmt-fab1
+        name: Format fab1 Rego files
+        entry: opa fmt --write
+        language: system
+        files: '^fab1/.*\.rego$'
+        pass_filenames: true
+        description: 'Automatically format Rego files in fab1 directory'
+
+      - id: opa-test-fab1
+        name: Test fab1 Rego policies
+        entry: bash -c 'cd fab1 && opa test policies/ tests/ -v'
+        language: system
+        files: '^fab1/.*\.rego$'
+        pass_filenames: false
+        description: 'Run OPA tests for fab1 after formatting'
